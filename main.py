@@ -54,8 +54,9 @@ async def control_termostato():
             SENSOR_DHT.measure()
             estado['temperatura'] = SENSOR_DHT.temperature()
             estado['humedad'] = SENSOR_DHT.humidity()
-        except OSError:
-            pass
+            print(f"Lectura exitosa -> Temp: {estado['temperatura']}°C | Hum: {estado['humedad']}%")
+        except OSError as e:
+            print(f"[!] Falla de hardware en SENSOR_DHT: {e}")
         
         if estado['modo'] == 'auto':
             if estado['temperatura'] > estado['setpoint']:
@@ -65,7 +66,7 @@ async def control_termostato():
         elif estado['modo'] == 'manual':
             RELE.value(0 if estado['rele'] == 1 else 1)
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
 async def publicar_estado(client):
     while True:
@@ -108,7 +109,7 @@ async def conexion_broker(client):
     while True:
         await client.up.wait()
         client.up.clear()
-        print(f"\n[!] Túnel MQTTS Establecido. ID de placa: {ID_DISPOSITIVO}")
+        print(f"\n[!] Conexion MQTTS Establecido. ID de placa: {ID_DISPOSITIVO}")
         
         topicos = ["/setpoint", "/periodo", "/destello", "/modo", "/rele"]
         for sub in topicos:
@@ -117,10 +118,9 @@ async def conexion_broker(client):
         
         await client.down.wait()
         client.down.clear()
-        print("\n[X] Conexión perdida. Intentando restaurar túnel...")
+        print("\n[X] Conexión perdida. Intentando restaurar conexion...")
 
 async def main():
-    # Asignación de variables externas al diccionario estático de la API
     config['ssid'] = settings.SSID
     config['wifi_pw'] = settings.password
     config['server'] = settings.BROKER
@@ -142,7 +142,7 @@ async def main():
     try:
         await client.connect()
     except OSError as e:
-        print(f"Error crítico en interfaz de red Wi-Fi/DNS: {e}")
+        print(f"Error crítico de red Wi-Fi/DNS: {e}")
 
     while True:
         await asyncio.sleep(1)
