@@ -8,14 +8,16 @@ import settings
 from mqtt_local import config
 from mqtt_as import MQTTClient
 
+# Asignación de Pines de Hardware
 PIN_DHT = 15
 PIN_RELE = 14
+
 SENSOR_DHT = dht.DHT11(machine.Pin(PIN_DHT))
 RELE = machine.Pin(PIN_RELE, machine.Pin.OUT, value=1)
 LED = machine.Pin("LED", machine.Pin.OUT)
-
 ID_DISPOSITIVO = binascii.hexlify(machine.unique_id()).decode()
 ARCHIVO_ESTADO = "estado.json"
+evento_cambio = asyncio.Event()
 
 def cargar_estado():
     try:
@@ -54,7 +56,6 @@ async def control_termostato():
             SENSOR_DHT.measure()
             estado['temperatura'] = SENSOR_DHT.temperature()
             estado['humedad'] = SENSOR_DHT.humidity()
-            print(f"Lectura exitosa -> Temp: {estado['temperatura']}°C | Hum: {estado['humedad']}%")
         except OSError as e:
             print(f"[!] Falla de hardware en SENSOR_DHT: {e}")
         
@@ -66,7 +67,12 @@ async def control_termostato():
         elif estado['modo'] == 'manual':
             RELE.value(0 if estado['rele'] == 1 else 1)
 
-        await asyncio.sleep(3)
+        try:
+            await asyncio.wait_for(evento_cambio.wait(), 3)
+            evento_cambio.clear()
+            print("[Modo Asíncrono] Cambio detectado por MQTT: Interrupción ejecutada.")
+        except asyncio.TimeoutError:
+            pass
 
 async def publicar_estado(client):
     while True:
@@ -91,15 +97,18 @@ async def procesar_eventos_mqtt(client):
             if t.endswith("/setpoint"):
                 estado['setpoint'] = float(m)
                 guardar_estado()
+                evento_cambio.set()  
             elif t.endswith("/periodo"):
                 estado['periodo'] = int(m)
                 guardar_estado()
             elif t.endswith("/modo"):
                 estado['modo'] = m
                 guardar_estado()
+                evento_cambio.set()  
             elif t.endswith("/rele"):
                 estado['rele'] = int(m)
                 guardar_estado()
+                evento_cambio.set()  
             elif t.endswith("/destello"):
                 asyncio.create_task(destello())
         except Exception as e:
@@ -124,8 +133,6 @@ async def main():
     config['ssid'] = settings.SSID
     config['wifi_pw'] = settings.password
     config['server'] = settings.BROKER
-    
-    # Parámetros secundarios
     config['port'] = settings.MQTT_PORT
     config['user'] = settings.MQTT_USER
     config['password'] = settings.MQTT_PASS
