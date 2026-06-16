@@ -8,7 +8,7 @@ import settings
 from mqtt_local import config
 from mqtt_as import MQTTClient
 
-# Asignación de Pines de Hardware
+#Pines
 PIN_DHT = 15
 PIN_RELE = 14
 
@@ -50,6 +50,11 @@ async def destello():
         await asyncio.sleep_ms(200)
     LED.off()
 
+async def consola_telemetria():
+    while True:
+        await asyncio.sleep(5)
+        print(f"Medicion actual -> Temp: {estado['temperatura']:.1f}°C | Hum: {estado['humedad']:.1f}%")
+
 async def control_termostato():
     while True:
         try:
@@ -60,17 +65,16 @@ async def control_termostato():
             print(f"[!] Falla de hardware en SENSOR_DHT: {e}")
         
         if estado['modo'] == 'auto':
-            if estado['temperatura'] > estado['setpoint']:
-                RELE.value(0)
-            else:
+            if estado['temperatura'] < estado['setpoint']:
                 RELE.value(1)
+            else:
+                RELE.value(0)
         elif estado['modo'] == 'manual':
             RELE.value(0 if estado['rele'] == 1 else 1)
 
         try:
             await asyncio.wait_for(evento_cambio.wait(), 3)
             evento_cambio.clear()
-            print("[Modo Asíncrono] Cambio detectado por MQTT: Interrupción ejecutada.")
         except asyncio.TimeoutError:
             pass
 
@@ -118,9 +122,10 @@ async def conexion_broker(client):
     while True:
         await client.up.wait()
         client.up.clear()
-        print(f"\n[!] Conexion MQTTS Establecido. ID de placa: {ID_DISPOSITIVO}")
         
-        topicos = ["/setpoint", "/periodo", "/destello", "/modo", "/rele"]
+        print(f"El ID es: {ID_DISPOSITIVO}")
+        
+        topicos = ["/destello", "/setpoint"]
         for sub in topicos:
             await client.subscribe(ID_DISPOSITIVO + sub, qos=1)
             print(f"Suscrito a tópico de escucha: {ID_DISPOSITIVO + sub}")
@@ -145,6 +150,7 @@ async def main():
     asyncio.create_task(control_termostato())
     asyncio.create_task(publicar_estado(client))
     asyncio.create_task(procesar_eventos_mqtt(client))
+    asyncio.create_task(consola_telemetria()) 
 
     try:
         await client.connect()
