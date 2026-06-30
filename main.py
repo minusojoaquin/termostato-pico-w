@@ -1,83 +1,95 @@
 import machine
-import time
 import dht
+import uasyncio as asyncio
 import json
-import network
-from umqtt.simple import MQTTClient
+import binascii
 import settings
+from mqtt_as import MQTTClient, config
 
-# 1. Inicialización de Capa de Red (WLAN)
-def inicializar_wlan():
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    if not wlan.isconnected():
-        print(f"SYS: Asociando a SSID [{settings.SSID}]...")
-        wlan.connect(settings.SSID, settings.password)
-        while not wlan.isconnected():
-            time.sleep(1)
-    print(f"SYS: Enlace establecido. IP asignada: {wlan.ifconfig()[0]}")
+ID_DISPOSITIVO = binascii.hexlify(machine.unique_id()).decode()
 
-inicializar_wlan()
+# Vectores desacoplados
+TOPIC_TELEMETRIA = f"{ID_DISPOSITIVO}/telemetria"
+TOPIC_ESTADO = f"{ID_DISPOSITIVO}/estado"
+TOPIC_COMANDO = f"{ID_DISPOSITIVO}/comando"
 
-# 2. Definición de Hardware
-rele = machine.Pin(2, machine.Pin.OUT)
-sensor = dht.DHT11(machine.Pin(4))
+PIN_DHT = 15
+PIN_RELE = 16
+SENSOR_DHT = dht.DHT11(machine.Pin(PIN_DHT))
+RELE = machine.Pin(PIN_RELE, machine.Pin.OUT, value=1) # Lógica inversa (1 = OFF)
 
-# 3. Definición de Tópicos MQTT
-TOPIC_SUB_COMANDO = b"comando"
-TOPIC_PUB_ESTADO = b"estado"
-TOPIC_PUB_TELEMETRIA = b"Sensores"
+memoria_dht = {"t": 0.0, "h": 0.0}
 
-# 4. Callback para recibir comandos
-def callback_rutina(topic, msg):
-    comando = msg.decode('utf-8')
-    print("Rx [comando]:", comando)
-    
-    if comando == "true":
-        rele.value(1)
-    elif comando == "false":
-        rele.value(0)
+async def mantener_suscripciones(client):
+    while True:
+        await client.up.wait()
+        client.up.clear()
+        print(f"SYS: Enlace MQTTS -> {ID_DISPOSITIVO}")
+        await client.subscribe(TOPIC_COMANDO, qos=1)
+
+async def telemetria_periodica(client):
+    while True:
+        await client.up.wait()
+        try:
+            SENSOR_DHT.measure()
+            memoria_dht["t"] = SENSOR_DHT.temperature()
+            memoria_dht["h"] = SENSOR_DHT.humidity()
+        except OSError:
+            pass
+            
+        payload = json.dumps({
+            "temperatura": memoria_dht["t"],
+            "humedad": memoria_dht["h"]
+        })
         
-    estado_actual = "true" if rele.value() == 1 else "false"
-    print("Tx [estado]:", estado_actual)
-    cliente.publish(TOPIC_PUB_ESTADO, estado_actual.encode())
+        await client.publish(TOPIC_TELEMETRIA, payload, qos=1)
+        print(f"Tx [{TOPIC_TELEMETRIA}]: {payload}")
+        await asyncio.sleep(10)
 
-# 5. Configuración MQTT
-cliente = MQTTClient(
-    client_id="nodoremoto",
-    server=settings.BROKER,
-    port=settings.MQTT_PORT,
-    user=settings.MQTT_USER,
-    password=settings.MQTT_PASS,
-    ssl=settings.MQTT_SSL
-)
+async def procesar_comandos(client):
+    async for topic, msg, retained in client.queue:
+        t = topic.decode()
+        m = msg.decode().strip()
+        print(f"Rx [{t}]: {m}")
 
-cliente.set_callback(callback_rutina)
-cliente.connect()
-cliente.subscribe(TOPIC_SUB_COMANDO)
-print("SYS: Conectado a Broker MQTT.")
+        if t == TOPIC_COMANDO:
+            if m == "true":
+                RELE.value(0)
+            elif m == "false":
+                RELE.value(1)
+            else:
+                continue
+            
+            # Acuse de recibo plano para UI-LED
+            estado_actual = "true" if RELE.value() == 0 else "false"
+            await client.publish(TOPIC_ESTADO, estado_actual, qos=1)
+            print(f"Tx [{TOPIC_ESTADO}]: {estado_actual}")
 
-# 6. Bucle de Telemetría (No Bloqueante)
-intervalo_envio = 5000 
-ultimo_envio = time.ticks_ms()
+async def main():
+    config['ssid'] = settings.SSID
+    config['wifi_pw'] = settings.password
+    config['server'] = settings.BROKER
+    config['port'] = settings.MQTT_PORT
+    config['user'] = settings.MQTT_USER
+    config['password'] = settings.MQTT_PASS
+    config['ssl'] = settings.MQTT_SSL
+    config['queue_len'] = 15
+    
+    client = MQTTClient(config)
+
+    asyncio.create_task(mantener_suscripciones(client))
+    asyncio.create_task(telemetria_periodica(client))
+    asyncio.create_task(procesar_comandos(client))
+
+    try:
+        await client.connect()
+    except OSError as e:
+        print(f"FATAL: Socket/DNS -> {e}")
+
+    while True:
+        await asyncio.sleep(1)
 
 try:
-    while True:
-        cliente.check_msg()
-        ahora = time.ticks_ms()
-        
-        if time.ticks_diff(ahora, ultimo_envio) > intervalo_envio:
-            try:
-                sensor.measure()
-                payload = json.dumps({"temperatura": sensor.temperature(), "humedad": sensor.humidity()})
-                cliente.publish(TOPIC_PUB_TELEMETRIA, payload.encode())
-                print(f"Tx [{TOPIC_PUB_TELEMETRIA.decode()}]: {payload}")
-            except OSError:
-                print("SYS: Error de lectura en sensor DHT.")
-                
-            ultimo_envio = time.ticks_ms()
-            
-        time.sleep(0.1)
-
+    asyncio.run(main())
 except KeyboardInterrupt:
-    cliente.disconnect()
+    pass
