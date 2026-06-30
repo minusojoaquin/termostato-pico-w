@@ -8,15 +8,14 @@ from mqtt_as import MQTTClient, config
 
 ID_DISPOSITIVO = binascii.hexlify(machine.unique_id()).decode()
 
-# Vectores desacoplados
-TOPIC_TELEMETRIA = f"{ID_DISPOSITIVO}/telemetria"
 TOPIC_ESTADO = f"{ID_DISPOSITIVO}/estado"
 TOPIC_COMANDO = f"{ID_DISPOSITIVO}/comando"
+TOPIC_NODO = f"{ID_DISPOSITIVO}/nodo"
 
 PIN_DHT = 15
-PIN_RELE = 16
+PIN_RELE = 14
 SENSOR_DHT = dht.DHT11(machine.Pin(PIN_DHT))
-RELE = machine.Pin(PIN_RELE, machine.Pin.OUT, value=1) # Lógica inversa (1 = OFF)
+RELE = machine.Pin(PIN_RELE, machine.Pin.OUT, value=1) 
 
 memoria_dht = {"t": 0.0, "h": 0.0}
 
@@ -24,12 +23,11 @@ async def mantener_suscripciones(client):
     while True:
         await client.up.wait()
         client.up.clear()
-        print(f"SYS: Enlace MQTTS -> {ID_DISPOSITIVO}")
+        print(f"\nID_Dispositivo -> {ID_DISPOSITIVO}")
         await client.subscribe(TOPIC_COMANDO, qos=1)
 
 async def telemetria_periodica(client):
     while True:
-        await client.up.wait()
         try:
             SENSOR_DHT.measure()
             memoria_dht["t"] = SENSOR_DHT.temperature()
@@ -42,15 +40,15 @@ async def telemetria_periodica(client):
             "humedad": memoria_dht["h"]
         })
         
-        await client.publish(TOPIC_TELEMETRIA, payload, qos=1)
-        print(f"Tx [{TOPIC_TELEMETRIA}]: {payload}")
+        await client.publish(TOPIC_ESTADO, payload, qos=1)
+        print(f"Enviado [{TOPIC_ESTADO}]: {payload}")
         await asyncio.sleep(10)
 
 async def procesar_comandos(client):
     async for topic, msg, retained in client.queue:
         t = topic.decode()
         m = msg.decode().strip()
-        print(f"Rx [{t}]: {m}")
+        print(f"Recibido [{t}]: {m}")
 
         if t == TOPIC_COMANDO:
             if m == "true":
@@ -60,10 +58,9 @@ async def procesar_comandos(client):
             else:
                 continue
             
-            # Acuse de recibo plano para UI-LED
             estado_actual = "true" if RELE.value() == 0 else "false"
-            await client.publish(TOPIC_ESTADO, estado_actual, qos=1)
-            print(f"Tx [{TOPIC_ESTADO}]: {estado_actual}")
+            await client.publish(TOPIC_NODO, estado_actual, qos=1)
+            print(f"Enviado [{TOPIC_NODO}]: {estado_actual}")
 
 async def main():
     config['ssid'] = settings.SSID
@@ -84,7 +81,7 @@ async def main():
     try:
         await client.connect()
     except OSError as e:
-        print(f"FATAL: Socket/DNS -> {e}")
+        print(f"Error en el Wi-Fi -> {e}")
 
     while True:
         await asyncio.sleep(1)
